@@ -11,14 +11,18 @@ export async function onRequest(context) {
     });
   }
 
+  // 2. テストモード判定（?test=1 または ?test=true で全通知を無効化）
+  const isTestMode = url.searchParams.get("test") === "1" || url.searchParams.get("test") === "true";
+
   const webhookUrl = env.DISCORD_WEBHOOK_URL;
   const jstTime = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
   const ip = request.headers.get("CF-Connecting-IP") || "不明";
   const userAgent = request.headers.get("User-Agent") || "不明";
 
-  // 2. 「返却しました」ボタン押下時のPOSTリクエスト処理
+  // 3. 「返却しました」ボタン押下時のPOSTリクエスト処理
   if (request.method === "POST" && url.searchParams.get("action") === "returned") {
-    if (webhookUrl) {
+    // テストモードでない場合のみDiscordへ通知
+    if (webhookUrl && !isTestMode) {
       const returnPayload = {
         embeds: [
           {
@@ -41,13 +45,17 @@ export async function onRequest(context) {
       });
     }
 
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({ success: true, testMode: isTestMode }), {
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  // 3. 通常アクセス時のDiscord通知（初期アクセス検知）
-  if (webhookUrl) {
+  // 4. 重複通知防止チェック（Cookieによる10分間のクールダウン制御）
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const hasNotifiedRecently = cookieHeader.includes(`umbrella_seen_${encodeURIComponent(tagToken)}=1`);
+
+  // テストモードでなく、かつ短時間の初回アクセス時のみDiscordへ通知
+  if (webhookUrl && !isTestMode && !hasNotifiedRecently) {
     const alertPayload = {
       embeds: [
         {
@@ -72,7 +80,11 @@ export async function onRequest(context) {
     );
   }
 
-  // 4. 返却要請画面のHTML
+  // 5. 赤色点滅アニメーション付き返却要請画面のHTML
+  const testBadgeHtml = isTestMode
+    ? `<div class="test-banner">⚠️ テストモード中（Discord通知は停止されています）</div>`
+    : "";
+
   const html = `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -81,6 +93,7 @@ export async function onRequest(context) {
   <title>【警告】防犯登録傘 - 元の場所へ返却してください</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    
     body {
       background-color: #0d0d0d;
       color: #ffffff;
@@ -90,20 +103,48 @@ export async function onRequest(context) {
       justify-content: center;
       align-items: center;
       padding: 20px;
+      animation: alert-pulse 1.2s infinite alternate ease-in-out;
     }
+    @keyframes alert-pulse {
+      0% { background-color: #0b0b0b; }
+      100% { background-color: #400a0a; }
+    }
+
     .card {
       background: #181818;
-      border: 2px solid #ff453a;
+      border: 3px solid #ff3b30;
       border-radius: 16px;
       max-width: 420px;
       width: 100%;
       padding: 28px 20px;
       text-align: center;
-      box-shadow: 0 4px 24px rgba(255, 69, 58, 0.2);
+      box-shadow: 0 0 25px rgba(255, 59, 48, 0.4);
+      animation: card-glow 1.2s infinite alternate ease-in-out;
     }
+    @keyframes card-glow {
+      0% {
+        border-color: #ff3b30;
+        box-shadow: 0 0 15px rgba(255, 59, 48, 0.3);
+      }
+      100% {
+        border-color: #ff6961;
+        box-shadow: 0 0 35px rgba(255, 59, 48, 0.7);
+      }
+    }
+
+    .test-banner {
+      background-color: #ffd60a;
+      color: #000;
+      font-size: 12px;
+      font-weight: bold;
+      padding: 6px 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
     .badge {
       display: inline-block;
-      background: #ff453a;
+      background: #ff3b30;
       color: #fff;
       font-size: 12px;
       font-weight: 700;
@@ -124,7 +165,7 @@ export async function onRequest(context) {
       line-height: 1.7;
       text-align: left;
       background: #241414;
-      border-left: 3px solid #ff453a;
+      border-left: 3px solid #ff3b30;
       padding: 14px;
       border-radius: 6px;
       margin-bottom: 20px;
@@ -135,7 +176,7 @@ export async function onRequest(context) {
     }
     .notice {
       font-size: 12px;
-      color: #8e8e93;
+      color: #a1a1a6;
       margin-bottom: 24px;
       line-height: 1.5;
     }
@@ -150,7 +191,7 @@ export async function onRequest(context) {
       border: none;
       cursor: pointer;
       box-shadow: 0 4px 12px rgba(52, 199, 89, 0.3);
-      transition: background 0.2s, opacity 0.2s;
+      transition: background 0.2s, transform 0.1s;
     }
     .return-btn:active {
       transform: scale(0.98);
@@ -176,12 +217,13 @@ export async function onRequest(context) {
 </head>
 <body>
   <div class="card">
+    ${testBadgeHtml}
     <span class="badge">管理識別: ${tagToken}</span>
     <h1>【重要】この傘は個人所有物です</h1>
     
     <div class="message">
       お取り違え、または持ち去りが発生しています。<br><br>
-      現在地・スキャンログはすでに所有者へ通知されました。<br>
+      現在地・スキャンログは所有者へ通知されました。<br>
       <strong>直ちに持ち去った元の傘立て（店舗・施設）へお戻しください。</strong>
     </div>
 
@@ -199,12 +241,13 @@ export async function onRequest(context) {
   </div>
 
   <script>
+    const isTest = ${isTestMode ? "true" : "false"};
     const STORAGE_KEY = 'umbrella_returned_' + encodeURIComponent("${tagToken}");
     const btn = document.getElementById('return-btn');
     const successBox = document.getElementById('success-box');
 
-    // 既に返却済みボタンが押されている場合は再押下をロック
-    if (localStorage.getItem(STORAGE_KEY)) {
+    // 本番時のみlocalStorageで二重送信を防止（テスト時は毎回動作確認できるよう除外）
+    if (!isTest && localStorage.getItem(STORAGE_KEY)) {
       setButtonDisabled();
     }
 
@@ -212,16 +255,18 @@ export async function onRequest(context) {
       btn.disabled = true;
       btn.textContent = '送信中...';
 
+      const postUrl = window.location.pathname + window.location.search + (window.location.search ? '&' : '?') + 'action=returned';
+
       try {
-        const res = await fetch(window.location.pathname + '?tag=${tagToken}&action=returned', {
-          method: 'POST'
-        });
+        const res = await fetch(postUrl, { method: 'POST' });
 
         if (res.ok) {
-          localStorage.setItem(STORAGE_KEY, 'true');
+          if (!isTest) {
+            localStorage.setItem(STORAGE_KEY, 'true');
+          }
           setButtonDisabled();
         } else {
-          alert('通信に失敗しました。電波の良い場所でもう一度お試しください。');
+          alert('通信に失敗しました。');
           btn.disabled = false;
           btn.textContent = '元の場所へ返却しました';
         }
@@ -241,10 +286,18 @@ export async function onRequest(context) {
 </body>
 </html>`;
 
-  return new Response(html, {
-    headers: {
-      "Content-Type": "text/html; charset=UTF-8",
-      "Cache-Control": "no-store",
-    },
+  const headers = new Headers({
+    "Content-Type": "text/html; charset=UTF-8",
+    "Cache-Control": "no-store",
   });
+
+  // テストモードではない、かつ初回アクセス時のみクッキーを付与
+  if (!isTestMode && !hasNotifiedRecently) {
+    headers.append(
+      "Set-Cookie",
+      `umbrella_seen_${encodeURIComponent(tagToken)}=1; Max-Age=600; Path=/; SameSite=Lax; HttpOnly`
+    );
+  }
+
+  return new Response(html, { headers });
 }
