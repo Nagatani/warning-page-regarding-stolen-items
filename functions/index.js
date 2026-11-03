@@ -46,43 +46,45 @@ export async function onRequest(context) {
   }
 
   // 4. 警告画面 ＆ サイレン・バイブレーションの返却
+  // 4. 警告画面 ＆ 確実なタップ起動型アラーム
   const html = `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>【警告】防犯追跡登録傘 - 追跡中</title>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
-      margin: 0;
-      padding: 0;
       width: 100%;
       height: 100%;
-      overflow: hidden;
-      background-color: #0d0d0d;
+      background-color: #0b0b0b;
       color: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
     }
-    #touch-area {
+    /* 全画面をタップ領域にする */
+    #overlay {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
       display: flex;
       flex-direction: column;
       justify-content: center;
       align-items: center;
-      width: 100%;
-      height: 100%;
       padding: 24px;
-      text-align: center;
-      cursor: pointer;
+      z-index: 9999;
     }
     .alert-card {
       border: 3px solid #ff3b30;
-      background: #2a0808;
-      padding: 28px 20px;
+      background: #1c0505;
+      padding: 24px 20px;
       border-radius: 16px;
-      max-width: 400px;
+      text-align: center;
+      max-width: 380px;
       width: 100%;
-      box-shadow: 0 0 25px rgba(255, 59, 48, 0.4);
+      box-shadow: 0 0 30px rgba(255, 59, 48, 0.4);
     }
     .badge {
       display: inline-block;
@@ -92,80 +94,115 @@ export async function onRequest(context) {
       font-weight: bold;
       padding: 4px 12px;
       border-radius: 20px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
-    h2 { margin: 0 0 12px 0; font-size: 22px; color: #ff453a; }
-    p { margin: 8px 0; font-size: 14px; color: #e5e5ea; line-height: 1.6; }
-    .tap-guide { margin-top: 20px; font-size: 12px; color: #8e8e93; border-top: 1px solid #441515; padding-top: 12px; }
-    .flashing { animation: flash-bg 0.5s infinite alternate; }
+    h2 { font-size: 20px; color: #ff453a; margin-bottom: 12px; }
+    p { font-size: 14px; color: #d1d1d6; line-height: 1.6; margin-bottom: 20px; }
+    
+    /* 相手が思わず押してしまうボタンデザイン */
+    .action-btn {
+      display: block;
+      width: 100%;
+      background: #ff3b30;
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+      padding: 16px 0;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(255, 59, 48, 0.5);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+      100% { transform: scale(1); }
+    }
+    .flashing {
+      animation: flash-bg 0.4s infinite alternate;
+    }
     @keyframes flash-bg {
-      0% { background-color: #0d0d0d; }
-      100% { background-color: #5c0a0a; }
+      0% { background-color: #0b0b0b; }
+      100% { background-color: #660000; }
     }
   </style>
 </head>
 <body>
-  <div id="touch-area">
+  <div id="overlay">
     <div class="alert-card">
-      <span class="badge">追跡セキュリティ作動中</span>
+      <span class="badge">防犯追跡作動中</span>
       <h2>【警告】所有者管理傘</h2>
-      <p>この傘は位置・端末検知システムに登録されています。</p>
-      <p>アクセス日時・IP・端末識別ログが管理者のDiscordへ即時送信されました。</p>
-      <div class="tap-guide">画面をタップして確認を完了してください</div>
+      <p>この傘のNFCタグが読み取られました。<br>端末識別情報・IPを所有者に送信済みです。</p>
+      
+      <!-- 閉じようとする・解除しようとする心理を利用してタップさせる -->
+      <button class="action-btn" id="trigger-btn">
+        誤操作・返却手続きへ進む
+      </button>
     </div>
   </div>
 
   <script>
     let audioCtx = null;
-    let isAlarming = false;
+    let isFired = false;
 
-    function startSiren() {
-      if (isAlarming) return;
-      isAlarming = true;
+    // 音声発火コア関数（タッチイベント内でのみ動かす）
+    async function triggerAlarm() {
+      if (isFired) return;
+      isFired = true;
 
+      // 1. 画面の赤点滅開始
       document.body.classList.add('flashing');
 
+      // 2. Androidバイブレーション
       if (navigator.vibrate) {
-        navigator.vibrate([300, 200, 300, 200, 500]);
+        navigator.vibrate([400, 200, 400, 200, 600]);
       }
 
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new AudioContext();
+      // 3. AudioContext初期化 ＆ 強制resume（iOS必須処理）
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContextClass();
 
-      function playBeep(freq, duration, delay) {
-        setTimeout(() => {
-          if (!audioCtx) return;
-          const osc = audioCtx.createOscillator();
-          const gain = audioCtx.createGain();
-
-          osc.type = 'sawtooth';
-          osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-
-          gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
-
-          osc.connect(gain);
-          gain.connect(audioCtx.destination);
-
-          osc.start();
-          osc.stop(audioCtx.currentTime + duration);
-        }, delay);
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
       }
 
-      let delay = 0;
-      for (let i = 0; i < 4; i++) {
-        playBeep(880, 0.15, delay);
-        playBeep(659.25, 0.15, delay + 180);
-        delay += 380;
-      }
+      // 4. アラーム音の合成再生（周波数を高速スイープさせる鋭い防犯ブザー音）
+      playEmergencySiren();
     }
 
-    const touchArea = document.getElementById('touch-area');
-    touchArea.addEventListener('click', startSiren, { once: true });
-    touchArea.addEventListener('touchstart', startSiren, { once: true });
+    function playEmergencySiren() {
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
 
-    window.addEventListener('load', () => {
-      try { startSiren(); } catch (e) {}
+      osc.type = 'sawtooth';
+
+      // 800Hz 〜 1600Hz を高速往復させる防犯アラーム音
+      for (let i = 0; i < 15; i++) {
+        const step = i * 0.25;
+        osc.frequency.setValueAtTime(850, now + step);
+        osc.frequency.linearRampToValueAtTime(1600, now + step + 0.12);
+        osc.frequency.linearRampToValueAtTime(850, now + step + 0.25);
+      }
+
+      // 最大音量近くに設定
+      gain.gain.setValueAtTime(0.8, now);
+      // 4秒後にフェードアウト
+      gain.gain.setValueAtTime(0.8, now + 3.8);
+      gain.gain.linearRampToValueAtTime(0.01, now + 4.0);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start(now);
+      osc.stop(now + 4.0);
+    }
+
+    // 画面全体のどこをタップ・スワイプしても即鳴らす
+    const overlay = document.getElementById('overlay');
+    ['touchstart', 'touchend', 'click'].forEach(evt => {
+      overlay.addEventListener(evt, triggerAlarm, { once: true, passive: false });
     });
   </script>
 </body>
