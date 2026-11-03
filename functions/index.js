@@ -2,11 +2,8 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  // 1. 推測されにくいパラメータ名に変更（例: "tag"）
-  // 以前の "id" は受け付けず無視します
+  // 1. パラメータチェック（tag が存在しない場合は 404 で遮断）
   const tagToken = url.searchParams.get("tag");
-
-  // 2. パラメータが設定されていない（または空文字）場合は即座に無効化
   if (!tagToken) {
     return new Response("Not Found", {
       status: 404,
@@ -14,23 +11,53 @@ export async function onRequest(context) {
     });
   }
 
-  // 3. 有効なパラメータが存在する場合のみDiscordへ通知
+  const webhookUrl = env.DISCORD_WEBHOOK_URL;
   const jstTime = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
   const ip = request.headers.get("CF-Connecting-IP") || "不明";
   const userAgent = request.headers.get("User-Agent") || "不明";
 
-  const webhookUrl = env.DISCORD_WEBHOOK_URL;
+  // 2. 「返却しました」ボタン押下時のPOSTリクエスト処理
+  if (request.method === "POST" && url.searchParams.get("action") === "returned") {
+    if (webhookUrl) {
+      const returnPayload = {
+        embeds: [
+          {
+            title: "🟢 傘が元の場所に返却されました",
+            color: 0x2ecc71, // 緑色
+            description: "相手が画面上の「返却しました」ボタンを押しました。",
+            fields: [
+              { name: "識別トークン (tag)", value: `\`${tagToken}\``, inline: true },
+              { name: "返却報告時刻 (JST)", value: jstTime, inline: true },
+              { name: "接続元IP", value: ip, inline: false },
+            ],
+          },
+        ],
+      };
+
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(returnPayload),
+      });
+    }
+
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // 3. 通常アクセス時のDiscord通知（初期アクセス検知）
   if (webhookUrl) {
-    const discordPayload = {
+    const alertPayload = {
       embeds: [
         {
           title: "🚨 傘のNFCタグがスキャンされました",
-          color: 0xff0000,
+          color: 0xff3b30, // 赤色
           fields: [
             { name: "識別トークン (tag)", value: `\`${tagToken}\``, inline: true },
             { name: "スキャン時刻 (JST)", value: jstTime, inline: true },
             { name: "接続元IP", value: ip, inline: false },
-            { name: "端末情報 (User-Agent)", value: `\`\`\`${userAgent.slice(0, 500)}\`\`\``, inline: false },
+            { name: "端末情報 (User-Agent)", value: `\`\`\`${userAgent.slice(0, 300)}\`\`\``, inline: false },
           ],
         },
       ],
@@ -40,170 +67,176 @@ export async function onRequest(context) {
       fetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(discordPayload),
+        body: JSON.stringify(alertPayload),
       })
     );
   }
 
-  // 4. 警告画面 ＆ サイレン・バイブレーションの返却
-  // 4. 警告画面 ＆ 確実なタップ起動型アラーム
+  // 4. 返却要請画面のHTML
   const html = `<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>【警告】防犯追跡登録傘 - 追跡中</title>
+  <title>【警告】防犯登録傘 - 元の場所へ返却してください</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body {
-      width: 100%;
-      height: 100%;
-      background-color: #0b0b0b;
+    body {
+      background-color: #0d0d0d;
       color: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      overflow: hidden;
-      user-select: none;
-      -webkit-user-select: none;
-    }
-    /* 全画面をタップ領域にする */
-    #overlay {
-      position: fixed;
-      top: 0; left: 0; width: 100%; height: 100%;
+      min-height: 100vh;
       display: flex;
-      flex-direction: column;
       justify-content: center;
       align-items: center;
-      padding: 24px;
-      z-index: 9999;
+      padding: 20px;
     }
-    .alert-card {
-      border: 3px solid #ff3b30;
-      background: #1c0505;
-      padding: 24px 20px;
+    .card {
+      background: #181818;
+      border: 2px solid #ff453a;
       border-radius: 16px;
-      text-align: center;
-      max-width: 380px;
+      max-width: 420px;
       width: 100%;
-      box-shadow: 0 0 30px rgba(255, 59, 48, 0.4);
+      padding: 28px 20px;
+      text-align: center;
+      box-shadow: 0 4px 24px rgba(255, 69, 58, 0.2);
     }
     .badge {
       display: inline-block;
-      background: #ff3b30;
+      background: #ff453a;
       color: #fff;
-      font-size: 13px;
-      font-weight: bold;
+      font-size: 12px;
+      font-weight: 700;
       padding: 4px 12px;
       border-radius: 20px;
-      margin-bottom: 14px;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
     }
-    h2 { font-size: 20px; color: #ff453a; margin-bottom: 12px; }
-    p { font-size: 14px; color: #d1d1d6; line-height: 1.6; margin-bottom: 20px; }
-    
-    /* 相手が思わず押してしまうボタンデザイン */
-    .action-btn {
-      display: block;
+    h1 {
+      font-size: 20px;
+      color: #ff453a;
+      margin-bottom: 14px;
+      line-height: 1.4;
+    }
+    .message {
+      font-size: 14px;
+      color: #d1d1d6;
+      line-height: 1.7;
+      text-align: left;
+      background: #241414;
+      border-left: 3px solid #ff453a;
+      padding: 14px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+    .message strong {
+      color: #fff;
+      text-decoration: underline;
+    }
+    .notice {
+      font-size: 12px;
+      color: #8e8e93;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    .return-btn {
       width: 100%;
-      background: #ff3b30;
-      color: white;
+      background: #34c759;
+      color: #fff;
       font-size: 16px;
       font-weight: bold;
       padding: 16px 0;
-      border-radius: 10px;
+      border-radius: 12px;
       border: none;
       cursor: pointer;
-      box-shadow: 0 4px 12px rgba(255, 59, 48, 0.5);
-      animation: pulse 1.5s infinite;
+      box-shadow: 0 4px 12px rgba(52, 199, 89, 0.3);
+      transition: background 0.2s, opacity 0.2s;
     }
-    @keyframes pulse {
-      0% { transform: scale(1); }
-      50% { transform: scale(1.03); }
-      100% { transform: scale(1); }
+    .return-btn:active {
+      transform: scale(0.98);
     }
-    .flashing {
-      animation: flash-bg 0.4s infinite alternate;
+    .return-btn:disabled {
+      background: #3a3a3c;
+      color: #8e8e93;
+      box-shadow: none;
+      cursor: not-allowed;
     }
-    @keyframes flash-bg {
-      0% { background-color: #0b0b0b; }
-      100% { background-color: #660000; }
+    .success-box {
+      display: none;
+      background: #142918;
+      border: 1px solid #34c759;
+      border-radius: 8px;
+      padding: 14px;
+      margin-top: 16px;
+      font-size: 13px;
+      color: #34c759;
+      line-height: 1.5;
     }
   </style>
 </head>
 <body>
-  <div id="overlay">
-    <div class="alert-card">
-      <span class="badge">防犯追跡作動中</span>
-      <h2>【警告】所有者管理傘</h2>
-      <p>この傘のNFCタグが読み取られました。<br>端末識別情報・IPを所有者に送信済みです。</p>
-      
-      <!-- 閉じようとする・解除しようとする心理を利用してタップさせる -->
-      <button class="action-btn" id="trigger-btn">
-        誤操作・返却手続きへ進む
-      </button>
+  <div class="card">
+    <span class="badge">管理識別: ${tagToken}</span>
+    <h1>【重要】この傘は個人所有物です</h1>
+    
+    <div class="message">
+      お取り違え、または持ち去りが発生しています。<br><br>
+      現在地・スキャンログはすでに所有者へ通知されました。<br>
+      <strong>直ちに持ち去った元の傘立て（店舗・施設）へお戻しください。</strong>
+    </div>
+
+    <p class="notice">
+      元の場所へ傘を戻したら、下のボタンを押してください。<br>所有者に返却完了の通知が送信されます。
+    </p>
+
+    <button id="return-btn" class="return-btn" onclick="submitReturn()">
+      元の場所へ返却しました
+    </button>
+
+    <div id="success-box" class="success-box">
+      返却通知を所有者に送信しました。<br>ご協力ありがとうございました。<br>返却が確認されない場合は、所轄の警察署から連絡が入る場合があります。
     </div>
   </div>
 
   <script>
-    let audioCtx = null;
-    let isFired = false;
+    const STORAGE_KEY = 'umbrella_returned_' + encodeURIComponent("${tagToken}");
+    const btn = document.getElementById('return-btn');
+    const successBox = document.getElementById('success-box');
 
-    // 音声発火コア関数（タッチイベント内でのみ動かす）
-    async function triggerAlarm() {
-      if (isFired) return;
-      isFired = true;
-
-      // 1. 画面の赤点滅開始
-      document.body.classList.add('flashing');
-
-      // 2. Androidバイブレーション
-      if (navigator.vibrate) {
-        navigator.vibrate([400, 200, 400, 200, 600]);
-      }
-
-      // 3. AudioContext初期化 ＆ 強制resume（iOS必須処理）
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new AudioContextClass();
-
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
-
-      // 4. アラーム音の合成再生（周波数を高速スイープさせる鋭い防犯ブザー音）
-      playEmergencySiren();
+    // 既に返却済みボタンが押されている場合は再押下をロック
+    if (localStorage.getItem(STORAGE_KEY)) {
+      setButtonDisabled();
     }
 
-    function playEmergencySiren() {
-      const now = audioCtx.currentTime;
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
+    async function submitReturn() {
+      btn.disabled = true;
+      btn.textContent = '送信中...';
 
-      osc.type = 'sawtooth';
+      try {
+        const res = await fetch(window.location.pathname + '?tag=${tagToken}&action=returned', {
+          method: 'POST'
+        });
 
-      // 800Hz 〜 1600Hz を高速往復させる防犯アラーム音
-      for (let i = 0; i < 15; i++) {
-        const step = i * 0.25;
-        osc.frequency.setValueAtTime(850, now + step);
-        osc.frequency.linearRampToValueAtTime(1600, now + step + 0.12);
-        osc.frequency.linearRampToValueAtTime(850, now + step + 0.25);
+        if (res.ok) {
+          localStorage.setItem(STORAGE_KEY, 'true');
+          setButtonDisabled();
+        } else {
+          alert('通信に失敗しました。電波の良い場所でもう一度お試しください。');
+          btn.disabled = false;
+          btn.textContent = '元の場所へ返却しました';
+        }
+      } catch (err) {
+        alert('通信に失敗しました。');
+        btn.disabled = false;
+        btn.textContent = '元の場所へ返却しました';
       }
-
-      // 最大音量近くに設定
-      gain.gain.setValueAtTime(0.8, now);
-      // 4秒後にフェードアウト
-      gain.gain.setValueAtTime(0.8, now + 3.8);
-      gain.gain.linearRampToValueAtTime(0.01, now + 4.0);
-
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-
-      osc.start(now);
-      osc.stop(now + 4.0);
     }
 
-    // 画面全体のどこをタップ・スワイプしても即鳴らす
-    const overlay = document.getElementById('overlay');
-    ['touchstart', 'touchend', 'click'].forEach(evt => {
-      overlay.addEventListener(evt, triggerAlarm, { once: true, passive: false });
-    });
+    function setButtonDisabled() {
+      btn.disabled = true;
+      btn.textContent = '返却通知済み';
+      successBox.style.display = 'block';
+    }
   </script>
 </body>
 </html>`;
